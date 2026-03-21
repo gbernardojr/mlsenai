@@ -65,14 +65,16 @@ if uploaded_file is not None:
             X = df.drop(columns=[target_col])
             y = df[target_col]
             
-            # Filtrar apenas colunas numéricas como features (simplificação)
+            # Filtrar apenas colunas numéricas como features (simplificação), EXCLUINDO casual/registered (leakage)
             numeric_cols = X.select_dtypes(include=np.number).columns.tolist()
+            exclude_cols = ['casual', 'registered']
+            numeric_cols = [c for c in numeric_cols if c not in exclude_cols]
             if not numeric_cols:
                 st.error("❌ Não foram encontradas colunas numéricas para usar como features.")
                 st.stop()
             
             X = X[numeric_cols]
-            st.info(f"Usando {len(numeric_cols)} features numéricas: {', '.join(numeric_cols)}")
+            st.info(f"Usando {len(numeric_cols)} features numéricas (sem casual/registered): {', '.join(numeric_cols)}")
             
             # ─── Detectar tipo de problema ────────────────────────────
             is_classification = True
@@ -234,7 +236,9 @@ if uploaded_file is not None:
 st.header("4. Previsão Interativa")
 if st.session_state.model is not None:
     import colunas_descricao
-    st.info(f"Modelo treinado com features: {', '.join(st.session_state.X_columns)}")
+    import joblib
+    expected_features = joblib.load("features.pkl")
+    st.info(f"Modelo treinado com features: {', '.join(expected_features)}")
     
     # Date input for future prediction
     prediction_date = st.date_input("📅 Data da previsão (futura)", value=pd.Timestamp.now().date())
@@ -244,11 +248,13 @@ if st.session_state.model is not None:
         stats_min = stats.loc['min']
         stats_max = stats.loc['max']
     else:
-        stats_min = pd.Series([0.0] * len(st.session_state.X_columns), index=st.session_state.X_columns)
-        stats_max = pd.Series([1.0] * len(st.session_state.X_columns), index=st.session_state.X_columns)
+        stats_min = pd.Series([0.0] * len(expected_features), index=expected_features)
+        stats_max = pd.Series([1.0] * len(expected_features), index=expected_features)
     
-    # Add dteday features from prediction date
-    new_data = {}
+    # Initialize new_data for ALL expected features
+    new_data = {col: 0.0 for col in expected_features}
+    
+    # Auto-fill dteday features from prediction date
     new_data['dteday_year'] = prediction_date.year
     new_data['dteday_month'] = prediction_date.month
     new_data['dteday_day'] = prediction_date.day
@@ -260,25 +266,29 @@ if st.session_state.model is not None:
     if 'X' in locals():
         X_data = X
     
-    # Inputs for other features
-    for col in st.session_state.X_columns:
+    # Inputs for NON-dteday features
+    for col in expected_features:
         if col.startswith('dteday_'):
-            continue  # Skip, already set from date
+            continue  # Already set
             
         descricao = colunas_descricao.COLUNAS_DESCRICAO.get(col, "")
         label = f"{col}: {descricao}"
         min_val = stats_min[col]
         max_val = stats_max[col]
         
-        # Para colunas categóricas como season, weekday, etc. + new dteday categ
-        if col in ['season', 'yr', 'mnth', 'holiday', 'weekday', 'workingday', 'weathersit', 'dteday_month', 'dteday_dayofweek']:
-            unique_vals = sorted(X_data[col].unique()) if X_data is not None and col in X_data.columns else [0,1,2,3,4,5,6,7,8,9,10,11,12]
-            new_data[col] = st.selectbox(label, options=unique_vals, key=f"input_{col}")
+        # Categorical cols: use selectbox
+        if col in ['season', 'yr', 'mnth', 'holiday', 'weekday', 'workingday', 'weathersit']:
+            unique_vals = sorted(X_data[col].unique()) if X_data is not None and col in X_data.columns else [0,1,2,3,4]
+            default_idx = unique_vals.index(int((min_val + max_val)/2)) if len(unique_vals)>1 else 0
+            new_data[col] = st.selectbox(label, options=unique_vals, key=f"pred_input_{col}", index=default_idx)
         else:
-            new_data[col] = st.number_input(label, min_value=float(min_val), max_value=float(max_val), value=float((min_val + max_val)/2), step=0.01, key=f"input_{col}")
+            default = float((min_val + max_val)/2)
+            new_data[col] = st.number_input(label, min_value=float(min_val), max_value=float(max_val), value=default, step=0.01, key=f"pred_input_{col}")
     
     if st.button("🔮 Fazer Previsão", type="primary"):
-        X_new = pd.DataFrame([new_data])
+
+        # Reorder to match exact feature order
+        X_new = pd.DataFrame([new_data])[expected_features]
         pred = st.session_state.model.predict(X_new)[0]
         
         if st.session_state.is_classification and st.session_state.label_encoder:
@@ -291,7 +301,7 @@ if st.session_state.model is not None:
             st.metric("Data", prediction_date)
             st.metric("Valor Previsto", pred)
         with col2:
-            st.json(new_data)
+            st.json({k: v for k, v in new_data.items() if k in expected_features})
 else:
     st.warning("👆 Primeiro treine o modelo carregando dados e clicando em 'Treinar'")
 
