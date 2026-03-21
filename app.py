@@ -32,7 +32,26 @@ uploaded_file = st.file_uploader("Escolha o arquivo .csv", type=["csv"])
 if uploaded_file is not None:
     try:
         df = pd.read_csv(uploaded_file)
+        
+        # Parse dteday and extract features
+        if 'dteday' in df.columns:
+            df['dteday'] = pd.to_datetime(df['dteday'], errors='coerce')
+            df['dteday_year'] = df['dteday'].dt.year
+            df['dteday_month'] = df['dteday'].dt.month
+            df['dteday_day'] = df['dteday'].dt.day
+            df['dteday_dayofweek'] = df['dteday'].dt.dayofweek
+            df['dteday_sin_month'] = np.sin(2 * np.pi * df['dteday_month'] / 12)
+            df['dteday_cos_month'] = np.cos(2 * np.pi * df['dteday_month'] / 12)
+            st.info("✅ dteday parsed and features extracted: dteday_year, _month, _dayofweek, sin/cos_month")
+        
+        # Remove useless 'instant' column (index)
+        if 'instant' in df.columns:
+            df = df.drop(columns=['instant'])
+            st.info("✅ Coluna 'instant' removida (sem valor preditivo)")
+        
         st.success(f"✅ Dataset carregado: {df.shape[0]} linhas × {df.shape[1]} colunas")
+
+
         
         with st.expander("Visualizar dados (primeiras linhas)"):
             st.dataframe(df.head(8))
@@ -217,6 +236,9 @@ if st.session_state.model is not None:
     import colunas_descricao
     st.info(f"Modelo treinado com features: {', '.join(st.session_state.X_columns)}")
     
+    # Date input for future prediction
+    prediction_date = st.date_input("📅 Data da previsão (futura)", value=pd.Timestamp.now().date())
+    
     if "X_stats" in st.session_state:
         stats = st.session_state.X_stats
         stats_min = stats.loc['min']
@@ -225,20 +247,32 @@ if st.session_state.model is not None:
         stats_min = pd.Series([0.0] * len(st.session_state.X_columns), index=st.session_state.X_columns)
         stats_max = pd.Series([1.0] * len(st.session_state.X_columns), index=st.session_state.X_columns)
     
+    # Add dteday features from prediction date
     new_data = {}
+    new_data['dteday_year'] = prediction_date.year
+    new_data['dteday_month'] = prediction_date.month
+    new_data['dteday_day'] = prediction_date.day
+    new_data['dteday_dayofweek'] = prediction_date.weekday()
+    new_data['dteday_sin_month'] = np.sin(2 * np.pi * new_data['dteday_month'] / 12)
+    new_data['dteday_cos_month'] = np.cos(2 * np.pi * new_data['dteday_month'] / 12)
+    
     X_data = None  # Para unique_vals
     if 'X' in locals():
         X_data = X
     
+    # Inputs for other features
     for col in st.session_state.X_columns:
+        if col.startswith('dteday_'):
+            continue  # Skip, already set from date
+            
         descricao = colunas_descricao.COLUNAS_DESCRICAO.get(col, "")
         label = f"{col}: {descricao}"
         min_val = stats_min[col]
         max_val = stats_max[col]
         
-        # Para colunas categóricas como season, weekday, etc., use selectbox
-        if col in ['season', 'yr', 'mnth', 'holiday', 'weekday', 'workingday', 'weathersit']:
-            unique_vals = sorted(X_data[col].unique()) if X_data is not None else [0,1,2,3,4]
+        # Para colunas categóricas como season, weekday, etc. + new dteday categ
+        if col in ['season', 'yr', 'mnth', 'holiday', 'weekday', 'workingday', 'weathersit', 'dteday_month', 'dteday_dayofweek']:
+            unique_vals = sorted(X_data[col].unique()) if X_data is not None and col in X_data.columns else [0,1,2,3,4,5,6,7,8,9,10,11,12]
             new_data[col] = st.selectbox(label, options=unique_vals, key=f"input_{col}")
         else:
             new_data[col] = st.number_input(label, min_value=float(min_val), max_value=float(max_val), value=float((min_val + max_val)/2), step=0.01, key=f"input_{col}")
@@ -250,15 +284,17 @@ if st.session_state.model is not None:
         if st.session_state.is_classification and st.session_state.label_encoder:
             pred = st.session_state.label_encoder.inverse_transform([int(pred)])[0]
         
-        st.success(f"**Previsão: {pred}**")
+        st.success(f"**Previsão para {prediction_date}: {pred}**")
         
         col1, col2 = st.columns(2)
         with col1:
+            st.metric("Data", prediction_date)
             st.metric("Valor Previsto", pred)
         with col2:
             st.json(new_data)
 else:
     st.warning("👆 Primeiro treine o modelo carregando dados e clicando em 'Treinar'")
+
 
 
 st.markdown("---")
